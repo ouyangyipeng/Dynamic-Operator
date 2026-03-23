@@ -227,7 +227,7 @@ g++ -O2 -std=c++17 -fopenmp -o build/test_cholesky src/test_cholesky.cpp
 **方式一：华为云ECS**
 1. 注册华为云账号
 2. 购买鲲鹏ECS实例（按需计费，测试完释放）
-3. 选择镜像：openEuler 22.03
+3. 选择镜像：openEuler 22.03 或 Ubuntu 22.04
 
 **方式二：鲲鹏开发者云服务**
 - 访问：https://www.huaweicloud.com/product/kunpeng.html
@@ -239,11 +239,15 @@ g++ -O2 -std=c++17 -fopenmp -o build/test_cholesky src/test_cholesky.cpp
 # 1. 连接到鲲鹏服务器
 ssh root@<服务器IP>
 
-# 2. 安装依赖
+# 2. 安装依赖 (Ubuntu)
+apt install -y git cmake gcc g++ make
+
+# 或 (openEuler)
 yum install -y git cmake gcc gcc-c++ make
 
-# 3. 安装LLVM 15
-yum install -y llvm llvm-devel llvm-static clang
+# 3. 安装LLVM 15 (可选，用于Pass开发)
+apt install -y llvm-15 llvm-15-dev clang-15  # Ubuntu
+yum install -y llvm llvm-devel llvm-static clang  # openEuler
 
 # 4. 安装毕昇编译器（可选）
 wget https://mirrors.huaweicloud.com/kunpeng/archive/compiler/bisheng_compiler/BiSheng%20Compiler-3.2.0.1-aarch64-linux.tar.gz
@@ -254,16 +258,18 @@ export PATH=$PATH:$(pwd)/BiSheng-3.2.0.1-aarch64-linux/bin
 git clone <项目地址>
 cd Dyna-Oper
 
-# 6. 编译项目
-g++ -O2 -std=c++17 -fopenmp -o build/cholesky_omp src/cholesky_omp.cpp
+# 6. 编译项目 (推荐优化选项)
+mkdir -p build
+g++ -O3 -std=c++17 -fopenmp -march=armv8-a -o build/cholesky_omp src/cholesky_omp.cpp
+g++ -O3 -std=c++17 -fopenmp -march=armv8-a -o build/test_cholesky src/test_cholesky.cpp
 
 # 7. 运行测试
-./build/cholesky_omp --test 1024 64
+OMP_NUM_THREADS=64 ./build/cholesky_omp --test 1024 64
 
-# 8. 编译LLVM Pass
+# 8. 编译LLVM Pass (可选)
 cd src/pass
 mkdir -p build && cd build
-cmake .. -DLLVM_DIR=/usr/lib64/llvm15/cmake
+cmake .. -DLLVM_DIR=/usr/lib/llvm-15/cmake
 make
 ```
 
@@ -271,13 +277,87 @@ make
 
 ```bash
 # 测试不同矩阵规模
-./build/cholesky_omp --test 512 64
-./build/cholesky_omp --test 1024 64
-./build/cholesky_omp --test 2048 64
-./build/cholesky_omp --test 4096 64
+OMP_NUM_THREADS=64 ./build/cholesky_omp --test 1024 64
+OMP_NUM_THREADS=64 ./build/cholesky_omp --test 2048 64
+OMP_NUM_THREADS=64 ./build/cholesky_omp --test 4096 64
+OMP_NUM_THREADS=64 ./build/cholesky_omp --test 8192 64
 
-# 运行完整测试
-./build/test_cholesky 200 1024 64
+# 测试不同线程数
+for t in 1 8 16 32 48 64 96 128; do
+    echo "=== $t threads ==="
+    OMP_NUM_THREADS=$t ./build/cholesky_omp --test 4096 64
+done
+
+# 运行完整200组测试
+OMP_NUM_THREADS=64 ./build/test_cholesky 200 1024 64
+```
+
+### 7.4 鲲鹏920实测结果 (2026-03-24)
+
+**测试环境**:
+- CPU: 鲲鹏920 (192核, 4插槽×48核, 8个NUMA节点)
+- 内存: 1.5TB
+- 操作系统: Ubuntu 22.04 LTS (aarch64)
+- 编译器: g++ 11.4.0
+
+**功能测试结果**:
+```
+Running 200 tests with 1024x1024 matrices, block size 64
+Using 64 OpenMP threads
+
+========================================
+Summary:
+  Total tests: 200
+  Passed: 200
+  Failed: 0
+  Pass rate: 100.0%
+  Total time: 5.66 seconds
+  Average time: 0.0283 seconds
+  Max residual: 1.218316e-04
+========================================
+```
+
+**性能测试结果**:
+
+| 矩阵规模 | 串行时间(T0) | 并行时间(T, 64线程) | 加速比(η) |
+|---------|-------------|-------------------|----------|
+| 1024×1024 | 0.35s | 0.03s | **11.7x** |
+| 2048×2048 | 3.46s | 0.17s | **20.3x** |
+| 4096×4096 | 26.6s | 0.60s | **44.3x** |
+| 8192×8192 | 186.2s | 4.99s | **37.3x** |
+
+**不同线程数性能 (4096×4096矩阵)**:
+
+| 线程数 | 并行时间 | 加速比 |
+|-------|---------|-------|
+| 1 | 27.95s | 1.0x |
+| 8 | 3.83s | 7.3x |
+| 16 | 1.91s | 14.6x |
+| 32 | 0.93s | 30.1x |
+| 48 | 0.79s | 35.5x |
+| 64 | 0.60s | 46.5x |
+| 96 | 0.59s | 47.3x |
+| 128 | 0.53s | **52.7x** |
+
+**最优配置建议**:
+- 最优块大小: **64**
+- 最优线程数: **64-128** (大矩阵推荐128线程)
+- 最大加速比: **52.7x** (4096矩阵, 128线程)
+
+### 7.5 NUMA优化建议
+
+鲲鹏920有8个NUMA节点，每个节点24核。对于大规模矩阵计算，建议：
+
+```bash
+# 安装numactl工具
+apt install -y numactl  # Ubuntu
+yum install -y numactl  # openEuler
+
+# 查看NUMA拓扑
+numactl --hardware
+
+# 绑定到特定NUMA节点运行 (例如绑定到NUMA节点0和1)
+numactl --cpunodebind=0,1 --membind=0,1 OMP_NUM_THREADS=48 ./build/cholesky_omp --test 4096 64
 ```
 
 ---
@@ -295,26 +375,26 @@ make
 | LLVM Pass开发 | ✅ | 依赖分析Pass |
 | 功能测试 | ✅ | 200组测试全通过 |
 | 设计文档 | ✅ | DESIGN.md |
+| **鲲鹏平台测试** | ✅ | **192核鲲鹏920实测完成** |
+| **性能优化** | ✅ | **最大加速比52.7x** |
 
 ### 8.2 待完成工作
 
 | 任务 | 优先级 | 说明 |
 |------|--------|------|
 | 拉取比赛代码仓 | 高 | 确保与官方代码兼容 |
-| 鲲鹏平台测试 | 高 | 验证ARM平台正确性和性能 |
 | Pass集成测试 | 高 | 与毕昇编译器集成 |
-| 性能优化 | 中 | 提高加速比 |
+| NUMA优化 | 中 | 进一步提升多核性能 |
 | 提交材料准备 | 中 | 按比赛要求整理 |
 
 ### 8.3 进度评估
 
-**当前进度**: 约80%
+**当前进度**: 约90%
 
 **剩余工作**:
-1. 在鲲鹏平台验证（关键）
-2. 与官方代码仓集成
-3. 性能调优
-4. 提交材料
+1. 与官方代码仓集成
+2. 毕昇编译器Pass集成
+3. 提交材料准备
 
 ---
 
@@ -328,23 +408,27 @@ make
 | OpenMP并行 | `src/cholesky_omp.cpp` | 多核加速 |
 | 动态调度 | `schedule(dynamic)` | 负载均衡 |
 | 任务依赖分析 | `src/pass/` | 自动识别并行机会 |
+| ARM NEON优化 | `-march=armv8-a` | 鲲鹏平台向量化 |
 
-### 9.2 当前性能数据
+### 9.2 鲲鹏920性能数据 (实测)
 
-| 矩阵规模 | 串行时间 | 并行时间(12核) | 加速比 |
-|---------|---------|---------------|-------|
-| 512×512 | 0.030s | 0.017s | 1.76x |
-| 1024×1024 | 0.19s | 0.05s | 3.8x |
-| 2048×2048 | 0.84s | 0.29s | 2.9x |
+| 矩阵规模 | 串行时间(T0) | 并行时间(T, 64线程) | 加速比(η) |
+|---------|-------------|-------------------|----------|
+| 1024×1024 | 0.35s | 0.03s | **11.7x** |
+| 2048×2048 | 3.46s | 0.17s | **20.3x** |
+| 4096×4096 | 26.6s | 0.60s | **44.3x** |
+| 8192×8192 | 186.2s | 4.99s | **37.3x** |
+
+**最大加速比**: 52.7x (4096矩阵, 128线程)
 
 ### 9.3 后续优化方向
 
-| 优化方向 | 预期收益 | 难度 |
-|---------|---------|------|
-| SIMD向量化 | 2-4x | 中 |
-| 缓存优化 | 1.5-2x | 中 |
-| 更细粒度任务调度 | 1.2-1.5x | 高 |
-| NUMA感知 | 1.2x | 高 |
+| 优化方向 | 预期收益 | 难度 | 状态 |
+|---------|---------|------|------|
+| SIMD向量化 | 2-4x | 中 | 已启用ARM NEON |
+| 缓存优化 | 1.5-2x | 中 | 已通过分块实现 |
+| 更细粒度任务调度 | 1.2-1.5x | 高 | 待实现 |
+| NUMA感知 | 1.2x | 高 | 待实现 |
 
 ---
 
