@@ -416,13 +416,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    elapsed = std::chrono::duration<double>(end - start).count();
-    printf("Parallel Block Cholesky time: %.6f seconds\n", elapsed);
+    double elapsed_parallel = std::chrono::duration<double>(end - start).count();
+    printf("Parallel Block Cholesky time: %.6f seconds\n", elapsed_parallel);
     
     scaled_residual = verify_result(A_copy.data(), L.data(), n);
     printf("Scaled residual: %.6e\n", scaled_residual);
     printf("Result: %s\n", scaled_residual < 16.0 ? "PASS" : "FAIL");
-    printf("Speedup: %.2fx\n", std::chrono::duration<double>(end - start).count() / elapsed);
+    printf("Speedup: %.2fx\n", elapsed / elapsed_parallel);
     
     // 单线程基准
     printf("\n=== Single-thread Cholesky ===\n");
